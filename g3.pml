@@ -1,5 +1,6 @@
 #define MAX 4
 #define NUM_SIMULATIONS 1
+#define NUM_CAPABILITIES 2
 #define CONCURRENT 0
 #define SEQUENTIAL 1
 #define ACCEPT 0
@@ -12,8 +13,10 @@
 // =================================================================
 bool e_TASK_READY_SENT = false
 bool e_HELLO_TASK_SENT = false
-bool e_CAP_COMPLETE = false
-int e_CAP_OUTPUT_SENT_COUNT = 0
+bool e_CAP_COMPLETE[NUM_CAPABILITIES]
+int e_CAP_OUTPUT[NUM_CAPABILITIES]
+bool e_TASK_CANCEL = false
+int e_CAP_CANCEL_COUNT = 0
 
 // =================================================================
 // Message Definitions
@@ -85,7 +88,7 @@ proctype taskClient() {
 			m.topic = LOAD_TASK
 			m.requestId = requestId
 			m.runMode = concurrentOrSequential
-			m.numCapabilities = 2
+			m.numCapabilities = NUM_CAPABILITIES
 			requestId = requestId + 1
 			busInput ! m
 		}
@@ -112,6 +115,7 @@ proctype taskClient() {
 						m.topic = CANCEL_TASK
 						printf("[Task client] Cancel Triggered (taskId=%d)\n", m.taskId)
 						busInput ! m
+						e_TASK_CANCEL = true
 						skip
 					}
 				:: else -> skip
@@ -271,6 +275,7 @@ proctype taskExecutor(Message m) {
 // Capability
 // =================================================================
 proctype capability(Message m; chan callback; bool shouldCallback) {
+	e_CAP_OUTPUT[m.capabilityId-1] = 0
 
 	// connect to message bus and setup receiving channels
 	int mySubscriberIndex
@@ -295,6 +300,7 @@ proctype capability(Message m; chan callback; bool shouldCallback) {
 	do
 	:: cancelChannel[m.taskId-1] ? cancel -> 
 		printf("[Capability-%d-%d] Canceled\n", m.taskId, m.capabilityId)
+		e_CAP_CANCEL_COUNT = e_CAP_CANCEL_COUNT + 1
 		break
 	:: myBusOutput ? m0 ->
 		if
@@ -306,19 +312,20 @@ proctype capability(Message m; chan callback; bool shouldCallback) {
 					printf("[Capability-%d-%d] Start\n", m0.taskId, m0.capabilityId)
 				:: (CAPABILITY_INPUT == m0.topic) ->
 					printf("[Capability-%d-%d] Received input\n", m0.taskId, m0.capabilityId)
-					// send output
+					
 					atomic {
+						// send output
 						m0.topic = CAPABILITY_OUTPUT
 						busInput ! m0
 						printf("[Capability-%d-%d] Produced output\n", m0.taskId, m0.capabilityId)
-						e_CAP_OUTPUT_SENT_COUNT = e_CAP_OUTPUT_SENT_COUNT + 1
-					}
-					// send capability complete
-					atomic {
+						e_CAP_OUTPUT[m.capabilityId-1] = e_CAP_OUTPUT[m.capabilityId-1] + 1
+
+						// send capability complete
 						m0.topic = CAPABILITY_COMPLETE
 						busInput ! m0
 						printf("[Capability-%d-%d] Complete\n", m0.taskId, m0.capabilityId)
-						e_CAP_COMPLETE = true
+						e_CAP_COMPLETE[m.capabilityId-1] = true
+						e_CAP_OUTPUT[m.capabilityId-1] = -1
 					}
 					// notify task manager I am complete
 					atomic {
@@ -347,8 +354,10 @@ proctype capability(Message m; chan callback; bool shouldCallback) {
 // =================================================================
 // LTL
 // =================================================================
-ltl READY_BEFORE_HELLO { [](!e_HELLO_TASK_SENT W e_TASK_READY_SENT) }
-ltl NO_OUTPUT_AFTER_COMPLETE { [](e_CAP_COMPLETE -> !(e_CAP_OUTPUT_SENT_COUNT > 1)) }
+ltl READY_BEFORE_HELLO { e_HELLO_TASK_SENT -> [](!e_TASK_READY_SENT U e_HELLO_TASK_SENT) }
+ltl NO_OUTPUT_AFTER_COMPLETE { (e_CAP_COMPLETE[0] -> [](e_CAP_OUTPUT[0] == -1)) && (e_CAP_COMPLETE[1] -> [](e_CAP_OUTPUT[1] == -1)) }
+ltl CANCEL_EVENTUAL_TERMINATE { e_TASK_CANCEL -> <>(e_CAP_CANCEL_COUNT == NUM_CAPABILITIES) }
+ltl FIRST_CAP_ALWAYS_FINISH_BEFORE_SECOND { [](!e_CAP_COMPLETE[1] W !e_CAP_COMPLETE[0]) }
 
 // =================================================================
 // Init
