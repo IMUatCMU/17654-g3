@@ -1,4 +1,4 @@
-#define MAX 3
+#define MAX 4
 #define NUM_SIMULATIONS 1
 #define CONCURRENT 0
 #define SEQUENTIAL 1
@@ -6,12 +6,6 @@
 #define REJECT 1
 #define CONTINUE 0
 #define CANCEL 1
-
-// =================================================================
-// Simulation Options
-// =================================================================
-bool SIMULATE_CANCEL = false
-bool SIMULATE_REJECT = false
 
 // =================================================================
 // Model Event Flags
@@ -86,10 +80,12 @@ proctype taskClient() {
 	int requestId = 0
 	for (i : 1 .. NUM_SIMULATIONS) {
 		atomic {
+			int concurrentOrSequential
+			select(concurrentOrSequential : CONCURRENT .. SEQUENTIAL)
 			m.topic = LOAD_TASK
 			m.requestId = requestId
-			m.runMode = SEQUENTIAL
-			m.numCapabilities = 1
+			m.runMode = concurrentOrSequential
+			m.numCapabilities = 2
 			requestId = requestId + 1
 			busInput ! m
 		}
@@ -108,8 +104,10 @@ proctype taskClient() {
 		:: (HELLO_CLIENT == m.topic) ->
 			printf("[Task client] HELLO_CLIENT received (taskId=%d, capabilityId=%d)\n", m.taskId, m.capabilityId)
 			atomic {
+				int cancelOrContinue
+				select(cancelOrContinue : CONTINUE .. CANCEL)
 				if
-				:: (SIMULATE_CANCEL) ->
+				:: (CANCEL == cancelOrContinue) ->
 					atomic {
 						m.topic = CANCEL_TASK
 						printf("[Task client] Cancel Triggered (taskId=%d)\n", m.taskId)
@@ -167,8 +165,10 @@ proctype taskManager() {
 	:: myBusOutput ? m -> 
 		if
 		:: (LOAD_TASK == m.topic) -> 
+			int acceptOrReject
+			select(acceptOrReject : ACCEPT .. REJECT)
 			if
-			:: (SIMULATE_REJECT) -> 
+			:: (REJECT == acceptOrReject) -> 
 				atomic {
 					printf("[Task manager] Task rejected, requestId = %d\n", m.requestId)
 					m.topic = REJECT_TASK
